@@ -1,1 +1,28 @@
-<img src="schemes/wiring(motors).jpeg" width="700">
+Motor wiring
+
+We connected each motor to the motor controller by joining a female-to-male jumper wire to a male-to-male one. A single wire wasn't long enough. The extra length means we can move or take out the motor controller to fix something without pulling the motors out of the truck. That saved us a lot of time whenever something went wrong.
+
+The downside is that every extra joint is one more place where a wire can work loose, especially as the truck vibrates while driving. We learnt this the hard way at the UK finals, when loose connections on our ultrasonic sensors stopped our code working. To stop it happening again, we tape each joint and check every connection before each run then later removed them as they were causing more problems.
+Power and voltages
+
+We measured the voltages with a multimeter:
+Where we measured	Voltage	Notes
+Motor battery, motors off	9.14 V	Rated 9 V Li-ion battery
+Motor terminals, while driving	about 4.1 V	Measured at speed [0.18]
+
+At first we were surprised the motors only got about 4.1 V from a 9 V battery. There are two reasons. First, the motor controller loses around 2 V inside itself before any power reaches the motors. Second, the controller sets the speed by switching the power on and off very quickly (PWM). The multimeter shows the average of that, which is lower than what the motor gets when the power is on. Even so, Mark 13's drive motor feels clearly more powerful than Mark 10's, the orange RC truck.
+What went wrong: the wrong power terminal
+
+When we first wired the motor controller, we connected the 9 V battery to the 5V terminal instead of the 12V terminal. The controller got hot, its overcurrent protection kept cutting the power, and then it started acting unpredictably. Sometimes the motors got no power at all, and sometimes they got far too much.
+
+When we looked into it, we realised the 12V terminal is the main power input for the motors. The 5V terminal is only for the board's own electronics. It either gives out 5 V or expects exactly 5 V coming in. We'd been putting almost double that into it.
+
+Once we moved the battery to the 12V terminal, with the negative wire on GND, the robot drove normally.
+
+What we learnt from this:
+
+    Always check the motor controller's instructions before connecting power, rather than guessing from the labels on the board.
+
+    Use a multimeter to check the battery's voltage and which wire is positive before plugging anything in.
+
+    Label the power wires, so that nobody makes the same mistake while fixing the robot under pressure at a competition.
