@@ -1,4 +1,4 @@
-## 3. Software architecture and obstacle strategy
+## 1. Software architecture and obstacle strategy
 
 ### How our software evolved
 
