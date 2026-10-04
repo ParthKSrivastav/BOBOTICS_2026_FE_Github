@@ -46,7 +46,7 @@ flowchart TD
     end
 
     subgraph CAMERA["Camera Processing<br/>(Outside ROS)"]
-        PICAM["Picamera3 / Picamera2"]
+        PICAM["Picamera3"]
         CV["OpenCV"]
         COLOUR["Colour Detection<br/>Red / Green"]
         CAMPUB["Camera Publisher"]
