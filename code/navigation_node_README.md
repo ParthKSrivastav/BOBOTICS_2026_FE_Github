@@ -558,8 +558,4 @@ Example test record:
 - `motor_node` should stop the motors if no `/cmd_vel` arrives for about 0.3 s, so a crashed navigation node can't leave the motors running.
 - Keep hands away from the steering linkage while the robot is enabled.
 
----
 
-## Licence
-
-Add your chosen licence (for example, MIT).
