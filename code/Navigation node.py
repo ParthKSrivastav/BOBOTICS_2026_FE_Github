@@ -1,50 +1,98 @@
-    #!/usr/bin/env python3
-## this is our current code for both open and obstacle it starts with imports, then defining all the variables, then subscribing to sensor info (kind of like subscribingto a youtube channel it gets information from the sensors)
-# THe code then makes the functions for camera, turning and moving forward
-#then it makes the navigation loop and stopping code
-# then creates the main 
+#!/usr/bin/env python3
 
 import math
-import rclpy
+import time
+import os
+from datetime import datetime
 
+import rclpy
 from rclpy.node import Node
 
-from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32
-from std_msgs.msg import Bool
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Float32, Bool
+
+from rclpy.qos import (
+    QoSProfile,
+    ReliabilityPolicy,
+    HistoryPolicy,
+    DurabilityPolicy
+)
 
 
 class NavigationNode(Node):
 
     def __init__(self):
-
-        # -----------------------------
-        # Navigation node initialization
-        # -----------------------------
-
         super().__init__("navigation_node")
 
-        self.imu_restarting = False
+        # =================================================
+        # ROS parameter
+        # =================================================
+
         self.declare_parameter("mode", "OPEN")
+        self.mode = self.get_parameter("mode").value.upper()
 
-        # -----------------------------
-        # Turn tracking
-        # -----------------------------
-        self.lap = 0 
+        # =================================================
+        # Logging
+        # =================================================
+
+        self.log_path = os.path.expanduser("~/robot_log.txt")
+
+        with open(self.log_path, "w") as f:
+            f.write("=== ROBOT LOG STARTED ===\n")
+
+        self.last_log_time = time.monotonic()
+
+        # =================================================
+        # IMU / heading values
+        # =================================================
+
+        self.yaw = 0.0
+        self.filtered_yaw = 0.0
+        self.yaw_offset = None
+        self.target_yaw = None
+
+        # Lower = smoother but slower yaw response.
+        self.filter_alpha = 0.15
+
+        # Normal heading controller.
+        self.kp = 0.027
+        self.max_steering = 0.70
+
+        # =================================================
+        # TF-Luna distances, in metres
+        # =================================================
+
+        self.front_distance = 999.0
+        self.rear_distance = 999.0
+        self.magenta_distance = 999.9
+        # Used when the robot must back away from a front wall.
+        self.reverse_enter = 0.30
+        self.reverse_threshold = 0.60
+
+        # =================================================
+        # Normal lap driving values
+        # =================================================
+
+        self.drive_speed = 0.30
+        self.reverse_speed = 0.40
+        self.turn_throttle = 0.30
+        self.turn_speed = 0.60
+
+        self.turn_distance = 0.80
+        self.turn_disarm_distance = 5.0
+        self.turn_target_angle = 87.0
+
+        self.turn_start_yaw = 0.0
         self.turn_count = 0
-        self.turning = False
-        self.turn_start_yaw = None
+        self.turn_reverse_ticks = 0
 
-        # -----------------------------
-        # IMU recovery
-        # -----------------------------
+        # Main ordinary-navigation state.
+        self.state = "DRIVING"
 
-        self.last_good_yaw = 0.0
-
-        # -----------------------------
-        # Camera values
-        # -----------------------------
+        # =================================================
+        # Camera: obstacle data
+        # =================================================
 
         self.green_detected = False
         self.green_x = -1.0
@@ -52,18 +100,95 @@ class NavigationNode(Node):
         self.red_detected = False
         self.red_x = -1.0
 
-        # -----------------------------
-        # Obstacle state
-        # -----------------------------
+        # =================================================
+        # Camera: magenta parking data
+        # =================================================
+
+        self.magenta_detected = False
+        self.magenta_x = -1.0
+        self.magenta_area = 0.0
+
+        self.magenta_last_seen = 0.0
+        self.magenta_stable_ticks = 0
+
+        # Camera detection must remain true and valid.
+        self.magenta_required_ticks = 5
+        self.magenta_min_area = 300.0
+        self.magenta_timeout_s = 0.30
+
+        # =================================================
+        # Parking state
+        # =================================================
+
+        self.in_parking_straight = True
+
+        self.parking_attempted = False
+        self.parking_state = "DISABLED"
+
+        # Heading captured while driving parallel to parking wall.
+        self.parking_heading = None
+
+        self.parking_start_time = 0.0
+        self.parking_state_start_time = 0.0
+
+        # -------------------------------------------------
+        # PARKING TUNING VALUES
+        # Start slow. Tune on your real WRO mat.
+        # -------------------------------------------------
+
+        # Forward movement after magenta is detected.
+        self.parking_approach_speed = 0.12
+        self.parking_forward_time = 0.35
+
+        # Reverse manoeuvre speeds.
+        self.parking_reverse_speed = -0.08
+        self.parking_straighten_speed = -0.06
+
+        # Reverse target heading = parking_heading + this angle.
+        #
+        # Start at +35.0.
+        # If robot turns away from the parking slot, use -35.0.
+        self.parking_entry_angle = 35.0
+
+        # IMU heading tolerance to count as parallel.
+        self.parking_parallel_yaw_tolerance = 3.0
+
+        # Rear TF-Luna values in metres.
+        #
+        # Tune these based on sensor-to-bumper offset.
+        self.parking_straighten_distance = 0.20
+        self.parking_stop_distance = 0.11
+        self.parking_emergency_stop_distance = 0.07
+
+        # Absolute safety timeout for the whole manoeuvre.
+        self.parking_timeout_s = 8.0
+
+        # =================================================
+        # Obstacle avoidance state
+        # =================================================
 
         self.obstacle_state = "NONE"
         self.obstacle_direction = None
+
         self.obstacle_start_yaw = None
         self.obstacle_target_yaw = None
 
-        # -----------------------------
-        # Publisher to motor node
-        # -----------------------------
+        self.obstacle_reverse_ticks = 0
+
+        self.max_obstacle_turn_angle = 90.0
+        self.obstacle_turn_speed = 0.60
+        self.obstacle_drive_speed = 0.35
+        self.obstacle_clear_distance = 1.00
+        
+        ##parking##
+        self.parking_search_speed = 0.16
+        self.parking_turn_angle = 45.0
+        self.parking_turn_timeout_s = 10
+        self.parking_turn_start_yaw = 0.0
+
+        # =================================================
+        # ROS publisher
+        # =================================================
 
         self.motor_pub = self.create_publisher(
             Twist,
@@ -71,128 +196,105 @@ class NavigationNode(Node):
             10
         )
 
-        # -----------------------------
-        # IMU subscriber
-        # -----------------------------
+        # =================================================
+        # TF-Luna QoS
+        # =================================================
 
-        self.imu_sub = self.create_subscription(
+        sensor_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE
+        )
+
+        # =================================================
+        # Sensor subscriptions
+        # =================================================
+
+        self.create_subscription(
             Imu,
             "/imu/data",
             self.imu_callback,
             10
         )
 
-        self.imu_restart_sub = self.create_subscription(
-            Bool,
-            "/imu/restart",
-            self.imu_restart_callback,
-            10
-        )
-
-        # -----------------------------
-        # TF-Luna subscribers
-        # -----------------------------
-
-        self.front_distance = 999.0
-        self.rear_distance = 999.0
-
-        self.front_sub = self.create_subscription(
+        self.create_subscription(
             Float32,
             "/tf_luna/front",
             self.front_callback,
-            10
+            sensor_qos
         )
 
-        self.rear_sub = self.create_subscription(
+        self.create_subscription(
             Float32,
             "/tf_luna/rear",
             self.rear_callback,
             10
         )
 
-        # -----------------------------
-        # Camera subscribers
-        # -----------------------------
+        # =================================================
+        # Camera subscriptions: obstacle colours
+        # =================================================
 
-        self.green_sub = self.create_subscription(
+        self.create_subscription(
             Bool,
             "/camera/green_detected",
             self.green_callback,
             10
         )
 
-        self.green_x_sub = self.create_subscription(
+        self.create_subscription(
             Float32,
             "/camera/green_x",
             self.green_x_callback,
             10
         )
 
-        self.red_sub = self.create_subscription(
+        self.create_subscription(
             Bool,
             "/camera/red_detected",
             self.red_callback,
             10
         )
 
-        self.red_x_sub = self.create_subscription(
+        self.create_subscription(
             Float32,
             "/camera/red_x",
             self.red_x_callback,
             10
         )
 
-        # -----------------------------
-        # Heading control
-        # -----------------------------
+        # =================================================
+        # Camera subscriptions: parking magenta
+        # =================================================
 
-        self.yaw = 0.0
-        self.filtered_yaw = 0.0
-        self.target_yaw = None
+        self.create_subscription(
+            Bool,
+            "/camera/magenta_detected",
+            self.magenta_callback,
+            10
+        )
 
-        # Gyro filter strength
-        self.filter_alpha = 0.15
+        self.create_subscription(
+            Float32,
+            "/camera/magenta_x",
+            self.magenta_x_callback,
+            10
+        )
 
-        # -----------------------------
-        # Lap tracking
-        # -----------------------------
+        self.create_subscription(
+            Float32,
+            "/camera/magenta_area",
+            self.magenta_area_callback,
+            10
+        )
 
-        self.lap = 1
-        self.mode = "LAP_1"
-        self.lap_marker_locked = False
-
-        # -----------------------------
-        # Driving settings
-        # -----------------------------
-
-        self.drive_speed = 0.15
-
-        self.turn_speed = 0.70
-        self.turn_throttle = 0.30
-
-        # P controller gain
-        self.kp = 0.025
-
-        # Maximum steering
-        self.max_steering = 0.60
-
-        # -----------------------------
-        # Obstacle settings
-        # -----------------------------
-
-        self.obstacle_turn_speed = 0.60
-        self.obstacle_drive_speed = 0.15
-
-        # Distance at which obstacle is considered passed.
-        # CHANGE THIS AFTER TESTING.
-        self.obstacle_clear_distance = 1.00
-
-        # -----------------------------
-        # Navigation loop
-        # -----------------------------
+        # =================================================
+        # Main control loop: 50 Hz
+        # =================================================
 
         self.timer = self.create_timer(
-            0.05,
+            0.02,
             self.navigation_loop
         )
 
@@ -200,9 +302,118 @@ class NavigationNode(Node):
             "Navigation node started."
         )
 
-    # =================================================
+    # =====================================================
+    # General helper methods
+    # =====================================================
+
+    def normalize_angle(self, angle):
+        while angle > 180.0:
+            angle -= 360.0
+
+        while angle < -180.0:
+            angle += 360.0
+
+        return angle
+
+    def publish(self, throttle, steering):
+        cmd = Twist()
+
+        # Your motor_node uses these as throttle and steering.
+        cmd.linear.x = float(throttle)
+        cmd.angular.z = float(steering)
+
+        self.motor_pub.publish(cmd)
+
+    def stop(self):
+        self.publish(0.0, 0.0)
+
+    def heading_hold(self, target_yaw, speed):
+        error = self.normalize_angle(
+            target_yaw - self.yaw
+        )
+
+        steering = self.kp * error
+
+        steering = max(
+            -self.max_steering,
+            min(self.max_steering, steering)
+        )
+
+        self.publish(speed, steering)
+
+    def log(self, message):
+        timestamp = datetime.now().strftime(
+            "%H:%M:%S.%f"
+        )[:-3]
+
+        with open(self.log_path, "a") as f:
+            f.write(
+                f"[{timestamp}] {message}\n"
+            )
+
+    # =====================================================
+    # IMU callback
+    # =====================================================
+
+    def imu_callback(self, msg):
+        x = msg.orientation.x
+        y = msg.orientation.y
+        z = msg.orientation.z
+        w = msg.orientation.w
+
+        siny = 2.0 * (
+            w * z + x * y
+        )
+
+        cosy = 1.0 - 2.0 * (
+            y * y + z * z
+        )
+
+        raw_yaw = math.degrees(
+            math.atan2(siny, cosy)
+        )
+
+        raw_yaw = self.normalize_angle(
+            raw_yaw
+        )
+
+        # On first IMU reading, define current direction as 0 degrees.
+        if self.yaw_offset is None:
+            self.yaw_offset = raw_yaw
+            self.yaw = 0.0
+            self.filtered_yaw = 0.0
+            self.target_yaw = 0.0
+            return
+
+        relative_yaw = self.normalize_angle(
+            raw_yaw - self.yaw_offset
+        )
+
+        difference = self.normalize_angle(
+            relative_yaw - self.filtered_yaw
+        )
+
+        self.filtered_yaw += (
+            self.filter_alpha * difference
+        )
+
+        self.yaw = self.normalize_angle(
+            self.filtered_yaw
+        )
+
+    # =====================================================
+    # TF-Luna callbacks
+    # =====================================================
+
+    def front_callback(self, msg):
+        self.front_distance = msg.data
+
+    def rear_callback(self, msg):
+        self.rear_distance = msg.data
+
+    # =====================================================
     # Camera callbacks
-    # =================================================
+    # =====================================================
 
     def green_callback(self, msg):
         self.green_detected = msg.data
@@ -216,136 +427,33 @@ class NavigationNode(Node):
     def red_x_callback(self, msg):
         self.red_x = msg.data
 
-    # =================================================
-    # Angle helper
-    # =================================================
-
-    def normalize_angle(self, angle):
-
-        while angle > 180:
-            angle -= 360
-
-        while angle < -180:
-            angle += 360
-
-        return angle
-
-    # =================================================
-    # TF-Luna callbacks
-    # =================================================
-
-    def front_callback(self, msg):
-        self.front_distance = msg.data
-
-    def rear_callback(self, msg):
-        self.rear_distance = msg.data
-
-    # =================================================
-    # IMU restart callback
-    # =================================================
-
-    def imu_restart_callback(self, msg):
-
-        self.imu_restarting = msg.data
+    def magenta_callback(self, msg):
+        self.magenta_detected = msg.data
 
         if msg.data:
+            self.magenta_last_seen = time.monotonic()
 
-            # Save the last known good heading
-            self.last_good_yaw = self.yaw
+    def magenta_x_callback(self, msg):
+        self.magenta_x = msg.data
 
-            self.get_logger().warn(
-                f"IMU restarting. "
-                f"Last good yaw = {self.last_good_yaw:.1f}"
-            )
+    def magenta_area_callback(self, msg):
+        self.magenta_area = msg.data
 
-    # =================================================
-    # IMU callback
-    # =================================================
-
-    def imu_callback(self, msg):
-
-        x = msg.orientation.x
-        y = msg.orientation.y
-        z = msg.orientation.z
-        w = msg.orientation.w
-
-        # Quaternion -> yaw
-
-        siny_cosp = 2.0 * (w * z + x * y)
-
-        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-
-        yaw_rad = math.atan2(
-            siny_cosp,
-            cosy_cosp
-        )
-
-        raw_yaw = math.degrees(yaw_rad)
-
-        raw_yaw = self.normalize_angle(raw_yaw)
-
-        # Low-pass filter
-
-        difference = self.normalize_angle(
-            raw_yaw - self.filtered_yaw
-        )
-
-        self.filtered_yaw += (
-            self.filter_alpha * difference
-        )
-
-        self.filtered_yaw = self.normalize_angle(
-            self.filtered_yaw
-        )
-
-        self.yaw = self.normalize_angle(
-            self.filtered_yaw
-        )
-
-        # If this is a normal valid IMU reading,
-        # remember it as the last good yaw.
-
-        if not self.imu_restarting:
-
-            self.last_good_yaw = self.yaw
-
-        self.get_logger().debug(
-            f"Raw: {raw_yaw:.2f} "
-            f"Filtered: {self.yaw:.2f}"
-        )
-
-        # Store starting heading
-
-        if self.target_yaw is None:
-
-            self.target_yaw = self.yaw
-
-            self.get_logger().info(
-                f"Starting heading: "
-                f"{self.target_yaw:.1f} degrees"
-            )
-
-    # =================================================
-    # Camera / colour detection
-    # =================================================
+    # =====================================================
+    # Red/green obstacle trigger
+    # =====================================================
 
     def colour_detection(self):
 
-        # Do not detect another obstacle while
-        # already performing an avoidance manoeuvre.
-
+        # Do not begin a fresh obstacle manoeuvre while already avoiding.
         if self.obstacle_state != "NONE":
             return
 
-        # -----------------------------
-        # GREEN -> RIGHT
-        # -----------------------------
-
+        # GREEN obstacle: pass on its right.
         if (
             self.green_detected
             and 150 < self.green_x < 400
         ):
-
             self.obstacle_direction = "RIGHT"
 
             self.obstacle_start_yaw = self.yaw
@@ -364,15 +472,11 @@ class NavigationNode(Node):
                 f"Target={self.obstacle_target_yaw:.1f}"
             )
 
-        # -----------------------------
-        # RED -> LEFT
-        # -----------------------------
-
+        # RED obstacle: pass on its left.
         elif (
             self.red_detected
             and 150 < self.red_x < 400
         ):
-
             self.obstacle_direction = "LEFT"
 
             self.obstacle_start_yaw = self.yaw
@@ -391,65 +495,107 @@ class NavigationNode(Node):
                 f"Target={self.obstacle_target_yaw:.1f}"
             )
 
-    # =================================================
-    # Obstacle navigation
-    # =================================================
+    # =====================================================
+    # Obstacle state machine
+    # =====================================================
 
     def obstacle_logic(self):
 
         if self.obstacle_state == "NONE":
             return False
 
-        command = Twist()
+        # If an obstacle is too close ahead, reverse before turning.
+        if (
+            self.front_distance <= self.reverse_enter
+            and self.obstacle_state != "REVERSE"
+        ):
+            self.obstacle_state = "REVERSE"
+            self.obstacle_reverse_ticks = 0
 
-        # =================================================
-        # TURN OUT 45 DEGREES
-        # =================================================
+        # -------------------------------------------------
+        # Reverse until front distance becomes safe.
+        # -------------------------------------------------
+        if self.obstacle_state == "REVERSE":
 
+            self.publish(-0.20, 0.0)
+
+            if self.front_distance >= self.reverse_threshold:
+                self.obstacle_reverse_ticks += 1
+            else:
+                self.obstacle_reverse_ticks = 0
+
+            if self.obstacle_reverse_ticks >= 5:
+
+                self.obstacle_state = "TURN_OUT"
+                self.obstacle_start_yaw = self.yaw
+
+                if self.obstacle_direction == "RIGHT":
+                    direction_angle = 45.0
+                else:
+                    direction_angle = -45.0
+
+                self.obstacle_target_yaw = (
+                    self.normalize_angle(
+                        self.obstacle_start_yaw
+                        + direction_angle
+                    )
+                )
+
+            return True
+
+        # -------------------------------------------------
+        # Turn out around the obstacle.
+        # -------------------------------------------------
         if self.obstacle_state == "TURN_OUT":
 
             error = self.normalize_angle(
                 self.obstacle_target_yaw - self.yaw
             )
 
-            # 3 degree tolerance
-            if abs(error) <= 3.0:
+            turned_angle = abs(
+                self.normalize_angle(
+                    self.yaw - self.obstacle_start_yaw
+                )
+            )
 
+            if (
+                turned_angle >= self.max_obstacle_turn_angle
+                or abs(error) <= 3.0
+            ):
                 self.obstacle_state = "PASS"
 
                 self.get_logger().info(
-                    "Obstacle 45 degree turn complete."
+                    "Obstacle turn out complete."
                 )
 
                 return True
 
-            command.linear.x = self.turn_throttle
-
             if error > 0:
-                command.angular.z = self.obstacle_turn_speed
+                steering = self.obstacle_turn_speed
             else:
-                command.angular.z = -self.obstacle_turn_speed
+                steering = -self.obstacle_turn_speed
 
-            self.motor_pub.publish(command)
+            self.publish(
+                self.turn_throttle,
+                steering
+            )
 
             return True
 
-        # =================================================
-        # PASS THE OBSTACLE
-        # =================================================
-
+        # -------------------------------------------------
+        # Drive beyond obstacle.
+        # -------------------------------------------------
         if self.obstacle_state == "PASS":
 
-            command.linear.x = self.obstacle_drive_speed
-            command.angular.z = 0.0
+            self.publish(
+                self.obstacle_drive_speed,
+                0.0
+            )
 
-            self.motor_pub.publish(command)
-
-            # Once the front sensor sees enough
-            # space, begin returning to original heading.
-
-            if self.front_distance >= self.obstacle_clear_distance:
-
+            if (
+                self.front_distance
+                >= self.obstacle_clear_distance
+            ):
                 self.obstacle_target_yaw = (
                     self.obstacle_start_yaw
                 )
@@ -464,10 +610,9 @@ class NavigationNode(Node):
 
             return True
 
-        # =================================================
-        # TURN BACK TO ORIGINAL HEADING
-        # =================================================
-
+        # -------------------------------------------------
+        # Return to original heading.
+        # -------------------------------------------------
         if self.obstacle_state == "TURN_BACK":
 
             error = self.normalize_angle(
@@ -483,225 +628,352 @@ class NavigationNode(Node):
                 self.obstacle_target_yaw = None
 
                 self.target_yaw = self.yaw
+                self.state = "DRIVING"
 
                 self.get_logger().info(
-                    "Obstacle manoeuvre complete. "
-                    "Returning to normal navigation."
+                    "Obstacle manoeuvre complete."
                 )
 
                 return True
 
-            command.linear.x = self.turn_throttle
-
             if error > 0:
-                command.angular.z = self.obstacle_turn_speed
+                steering = self.obstacle_turn_speed
             else:
-                command.angular.z = -self.obstacle_turn_speed
+                steering = -self.obstacle_turn_speed
 
-            self.motor_pub.publish(command)
+            self.publish(
+                self.turn_throttle,
+                steering
+            )
 
             return True
 
         return False
 
-    # =================================================
-    # Normal 90 degree turn logic
-    # =================================================
+    # =====================================================
+    # Normal driving / lap state machine
+    # =====================================================
 
-    def turn_logic(self, target_angle=80.0):
+    def start_turn(self):
+        self.state = "TURNING"
+        self.turn_start_yaw = self.yaw
 
-        if not self.turning:
-            return
+        self.get_logger().info(
+            f"Turn started at yaw={self.turn_start_yaw:.1f}"
+        )
 
-        angle_turned = self.normalize_angle(
+    def turn_logic(self):
+
+        angle = self.normalize_angle(
             self.yaw - self.turn_start_yaw
         )
 
-        # Normal 80 degree completion
-        # OR early completion if LiDAR sees enough space
+        # Corner has completed.
         if (
-            abs(angle_turned) >= target_angle
-            or
-            (self.front_distance > 1.25 and abs(angle_turned) >= 65.0)
+            abs(angle) >= self.turn_target_angle
+            or self.front_distance
+            >= self.turn_disarm_distance
         ):
-            self.stop_robot()
-            self.turning = False
-
-            # Count the completed turn
-            self.turn_count += 1
-
+            self.state = "TURN_EXIT"
             self.target_yaw = self.yaw
-
-            self.get_logger().info(
-                f"Turn completed. "
-                f"Turn angle: {angle_turned:.1f} degrees. "
-                f"Total turns: {self.turn_count}/4"
-            )
-
-            # ---------------------------------
-            # LAP COMPLETE AFTER 4 TURNS
-            # ---------------------------------
-
-            if self.turn_count >= 4:
-
-                self.lap += 1
-                self.turn_count = 0
-
-                self.get_logger().info(
-                    f"========== LAP COMPLETED =========="
-                )
-
-                self.get_logger().info(
-                    f"Total laps: {self.lap}/3"
-                )
-
-            self.get_logger().info(
-                f"New target yaw: {self.target_yaw:.1f}"
-            )
-    # =================================================
-    # Normal driving
-    # =================================================
-
-    def move_forward(self):
-
-        command = Twist()
-
-        # -----------------------------
-        # Normal Open Challenge turn
-        # -----------------------------
-
-        if self.front_distance < 0.75:
-
-            self.turning = True
-
-            self.turn_start_yaw = self.yaw
-
-            self.get_logger().info(
-                f"Turn started at "
-                f"{self.turn_start_yaw:.1f} degrees"
-            )
-
-            command.linear.x = self.turn_throttle
-            command.angular.z = self.turn_speed
-
-            self.motor_pub.publish(command)
-
             return
 
-        # -----------------------------
-        # Straight driving
-        # -----------------------------
+        # Too close to wall: reverse safely.
+        if self.front_distance <= self.reverse_enter:
+            self.state = "TURN_REVERSE"
+            return
 
-        error = self.normalize_angle(
-            self.target_yaw - self.filtered_yaw
+        self.publish(
+            self.turn_throttle,
+            self.turn_speed
         )
 
-        if abs(error) < 2.0:
-            error = 0.0
+    def turn_reverse_logic(self):
 
-        steering = -self.kp * error
+        self.publish(-self.reverse_speed, -0.75)
 
-        steering = max(
-            -self.max_steering,
-            min(self.max_steering, steering)
+        if self.front_distance >= self.reverse_threshold:
+            self.turn_reverse_ticks += 1
+        else:
+            self.turn_reverse_ticks = 0
+
+        if self.turn_reverse_ticks >= 5:
+            self.turn_reverse_ticks = 0
+            self.state = "TURNING"
+            self.stop()
+
+    def turn_exit_logic(self):
+
+        self.turn_count += 1
+
+        self.state = "DRIVING"
+        self.target_yaw = self.yaw
+
+        self.get_logger().info(
+            f"Turn complete: {self.turn_count}"
         )
 
-        command.linear.x = self.drive_speed
-        command.angular.z = steering
+        # Assumption: four corners per lap.
+        # The twelfth turn exits onto the parking/start straight.
+        if self.turn_count == 12:
+            self.in_parking_straight = True
+            self.obstacle_state = "NONE"
+            self.obstacle_direction = None
+            self.obstacle_start_yaw = None
+            self.obstacle_target_yaw = None
 
-        self.motor_pub.publish(command)
+            self.get_logger().info(
+                "Third lap complete. "
+                "Parking straight entered."
+            )
+#
+    def reverse_logic(self):
+
+        self.publish(-self.reverse_speed, 0.0)
+
+        if self.front_distance >= self.reverse_threshold:
+            self.state = "TURNING"
+
+    def normal_driving(self):
+
+        self.colour_detection()
+
+        if self.obstacle_state != "NONE":
+            self.state = "OBSTACLE"
+            return
+
+        if self.target_yaw is None:
+            self.target_yaw = self.yaw
+
+        # Front-wall safety.
+        if self.front_distance < self.reverse_enter:
+            self.state = "REVERSE"
+            return
+
+        # Begin a corner.
+        if self.front_distance <= self.turn_distance:
+            self.start_turn()
+            return
+
+        # Drive straight while holding heading.
+        self.heading_hold(
+            self.target_yaw,
+            self.drive_speed
+        )
+
+    # =====================================================
+    # Magenta parking trigger
+    # =====================================================
+
+    def magenta_marker_is_fresh(self):
+        return (
+            time.monotonic() - self.magenta_last_seen
+        ) < self.magenta_timeout_s
 
 
-    # =================================================
-    # Main navigation loop
-    # =================================================
+    def update_magenta_marker_stability(self):
+        marker_is_valid = (
+            self.magenta_detected
+            and self.magenta_area >= self.magenta_min_area
+            and self.magenta_marker_is_fresh()
+        )
+
+        if marker_is_valid:
+            self.magenta_stable_ticks = min(
+                self.magenta_stable_ticks + 1,
+                50
+            )
+        else:
+            self.magenta_stable_ticks = 0
+
+
+    def magenta_marker_confirmed(self):
+        return (
+            self.magenta_stable_ticks
+            >= self.magenta_required_ticks
+        )
+
+
+    def drive_while_searching_for_parking(self):
+        # Hold the final straight heading and do not call normal_driving().
+        if self.target_yaw is None:
+            self.target_yaw = self.yaw
+
+        self.heading_hold(
+            self.target_yaw,
+            self.parking_search_speed
+        )
+
+
+    def begin_parking_turn(self):
+        # Called once when stable magenta has been detected after lap 3.
+        self.parking_attempted = True
+        self.parking_state = "TURN_IN"
+
+        # Keep a separate reference from normal track turn_start_yaw.
+        self.parking_heading = self.yaw
+        self.parking_turn_start_yaw = self.yaw
+        self.parking_start_time = time.monotonic()
+
+        self.get_logger().info(
+            f"PARKING TURN STARTED | "
+            f"start_yaw={self.parking_turn_start_yaw:.1f} | "
+            f"magenta_x={self.magenta_x:.1f} | "
+            f"area={self.magenta_area:.0f}"
+        )
+
+
+    def run_parking_turn(self):
+        # This is the 45-degree turn-only parking test.
+        if self.parking_state == "TURN_IN":
+            angle_turned = self.normalize_angle(
+                self.yaw - self.parking_turn_start_yaw
+            )
+
+            if (
+                time.monotonic() - self.parking_start_time
+                > self.parking_turn_timeout_s
+            ):
+                self.parking_state = "ABORT"
+                self.stop()
+                self.get_logger().warn(
+                    "Parking turn timeout. Robot stopped."
+                )
+                return
+
+            if abs(angle_turned) >= self.parking_turn_angle:
+                self.parking_state = "PARKED"
+                self.stop()
+                self.get_logger().info(
+                    f"PARKING 45 DEG TURN COMPLETE | "
+                    f"angle={angle_turned:.1f}"
+                )
+                return
+
+            # Same movement style as your existing normal turn_logic().
+            self.publish(
+                self.turn_throttle,
+                self.turn_speed
+            )
+            return
+
+        if self.parking_state in ("PARKED", "ABORT"):
+            self.stop()
+
+    # -----------------------------------------------------
+    # 5. ADD THIS TO THE TOP OF navigation_loop(), AFTER
+    #    LOGGING AND BEFORE NORMAL TURN/DRIVING LOGIC
+    # -----------------------------------------------------
+        
+
+        if self.turn_count == 12 and self.in_parking_straight:
+            if self.parking_state == "DISABLED":
+                self.parking_state = "SEARCHING"
+                self.get_logger().info(
+                    "Three laps complete. Searching for magenta parking wall."
+                )
+
+            if self.parking_state == "SEARCHING":
+                self.update_magenta_marker_stability()
+
+                if (
+                    not self.parking_attempted
+                    and self.magenta_marker_confirmed()
+                ):
+                    self.begin_parking_turn()
+                    
+
+                self.drive_while_searching_for_parking()
+                
+
+        # -----------------------------------------------------
+        # 6. ADD THIS TO turn_exit_logic(), IMMEDIATELY AFTER:
+        #    self.turn_count += 1
+        # -----------------------------------------------------
+
+                
+        
+        # =====================================================
+        # Main navigation loop
+        # =====================================================
 
     def navigation_loop(self):
         
-        if self.lap > 3:
-            self.stop_robot()
+    
+        now = time.monotonic()
+
+        # Log at 10 Hz, not every 50 Hz control tick.
+        if now - self.last_log_time >= 0.10:
+
+            self.last_log_time = now
+
+            self.log(
+                f"STATE={self.state} | "
+                f"PARKING={self.parking_state} | "
+                f"Yaw={self.yaw:.2f} | "
+                f"TargetYaw={self.target_yaw} | "
+                f"Front={self.front_distance:.2f} | "
+                f"Rear={self.rear_distance:.2f} | "
+                f"Magenta={self.magenta_detected} | "
+                f"MagentaArea={self.magenta_area:.0f} | "
+                f"MagentaTicks={self.magenta_stable_ticks}"
+            )
+
+        # Parking owns control once it has begun.
+        if self.parking_state in ("TURN_IN", "PARKED", "ABORT"):
+            self.parking_logic()
             return
-        # -----------------------------
-        # IMU restart = STOP
-        # -----------------------------
-        if self.imu_restarting:
-            self.yaw = self.last_good_yaw
-            self.filtered_yaw = self.last_good_yaw
 
-            command = Twist()
-            command.linear.x = 0.0
-            command.angular.z = 0.0
+        # After three laps, search only on parking straight.
+        if (
+            self.turn_count >= 12
+            and self.in_parking_straight
+        ):
+            if self.parking_state == "DISABLED":
 
-            self.motor_pub.publish(command)
-            return
+                self.parking_state = "SEARCHING"
 
-        # -----------------------------
-        # Wait for first IMU heading
-        # -----------------------------
-
-        if self.target_yaw is None:
-            return
-
-        # -----------------------------
-        # If currently doing a normal turn
-        # -----------------------------
-
-        if self.turning:
-
-            self.turn_logic(80.0)
-
-            if self.turning:
                 self.get_logger().info(
-                    f"Turning at "
-                    f"{self.front_distance:.1f} degrees"
+                    "Three laps complete. "
+                    "Searching for magenta parking wall."
                 )
-                command = Twist()
 
-                command.linear.x = self.turn_throttle
-                command.angular.z = self.turn_speed
+            if self.parking_state == "SEARCHING":
 
-                self.motor_pub.publish(command)
+                self.update_magenta_stability()
 
-            return
+                if (
+                    not self.parking_attempted
+                    and self.magenta_marker_is_stable()
+                ):
+                    self.start_parking()
+                    return
 
-        # -----------------------------
-        # OBSTACLE MODE
-        # -----------------------------
-
-        if self.mode == "OBSTACLE":
-
-            # Look for a new obstacle
-            if self.obstacle_state == "NONE":
-                self.colour_detection()
-
-            # Execute obstacle manoeuvre
-            if self.obstacle_state != "NONE":
-                self.obstacle_logic()
+                self.parking_search_drive()
                 return
 
-        # -----------------------------
-        # Normal driving
-        # -----------------------------
+        # Normal driving before parking begins.
+        if self.state == "TURNING":
+            self.turn_logic()
 
-        self.move_forward()
+        elif self.state == "TURN_EXIT":
+            self.turn_exit_logic()
 
-    # =================================================
-    # Stop robot
-    # =================================================
+        elif self.state == "REVERSE":
+            self.reverse_logic()
 
-    def stop_robot(self):
+        elif self.state == "OBSTACLE":
+            self.obstacle_logic()
 
-        command = Twist()
+        elif self.state == "TURN_REVERSE":
+            self.turn_reverse_logic()
 
-        command.linear.x = 0.0
-        command.angular.z = 0.0
+        elif self.state == "FINISHED":
+            self.stop()
 
-        self.motor_pub.publish(command)
+        else:
+            self.normal_driving()
 
-
-# =================================================
-# Main
-# =================================================
 
 def main(args=None):
 
@@ -710,24 +982,16 @@ def main(args=None):
     node = NavigationNode()
 
     try:
-
         rclpy.spin(node)
 
     except KeyboardInterrupt:
-
-        node.get_logger().info(
-            "Stopping navigation"
-        )
-
-        node.stop_robot()
+        pass
 
     finally:
-
+        node.stop()
         node.destroy_node()
-
         rclpy.shutdown()
 
 
 if __name__ == "__main__":
-
     main()
