@@ -1,4 +1,8 @@
 video link for open challenge - https://youtu.be/dSNzIIwx2gU 
+
+
+
+
 This is our new code that we will use in  European WRO finals in Croatia. We have used ROS which acts like a nervous system, the raspberrypi is the brain and the sensors are like the 6 senses. They help the robot understand where it is and what is around it. We did not want to flash our raspberry pi to ubuntu so we use a docker to bypass this issue. However we later learnt that ubuntu does not support our picam3. 
 
 Camera publisher takes the values from the picam3(camera) and puts it through a bunch of python libraries, picam2(which gives us camera functionality) and OpenCV (which does the colour recognition). Then the code checks if the value matches specific rgb (red, green, blue values) that we have adjusted for green. Then it publishes it if it is green, to indicate where the green is, and if it is red, indicates the location of the red.
