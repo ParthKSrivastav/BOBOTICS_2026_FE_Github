@@ -1,7 +1,9 @@
 ##Team: 
+
 Parth Srivastav = year 11 in maiden erlegh, competed in WRO many times before, enjoys coding and building robots. 
 Raphael Peduru = year 11 in maiden erlegh, competed in WRO once before, enjoys learning new skills and expanding his intelligence.
 ###### AI was used in assisting debug (helping us understand what errors meant and to research). It was also used to mark the documentation and what is needed to improve to make it better.
+
 ##  Software architecture and obstacle strategy
 
 ### How our software evolved
