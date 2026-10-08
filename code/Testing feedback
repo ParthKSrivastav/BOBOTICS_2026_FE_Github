@@ -1,5 +1,10 @@
 this contains our testing information (what each test we did, results and possible reasons that we think was causing the issue).
 we have done this to make it easier for upcoming teams to learn how to debug and what process we used to get more accurate.
+debuging process : 
+    check for any code errors like syntax error
+    check the values printed by the different nodes and estimate if they are accurate
+    check if any sensors crashed during the run or if the motor controller overheated
+    then check if the logic is written properly
 1st test
 Messed up on fourth turn ( seems to have seen something too soon) 
 Increase power
