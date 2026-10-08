@@ -40,7 +40,7 @@ The robot is built from a set of key components:
 
 - [Picam 3 wide](https://www.amazon.co.uk/Raspberry-Pi-Camera-Module-Wide/dp/B0BRY757NX/ref=sr_1_1?crid=1NTDPWIE7Q2OE&dib=eyJ2IjoiMSJ9.4YIGua2AyJBwyPfh8NxHJW8QQAlbnLUUoSQVK4H13bKr6MdGMZooOus-9qexilu2uXX9KtlBr3XOhfPC1lJ_EoA2dWLnBRj3y5GQW9OMLtQjd-8JV4iZQPEsJ_kSIdFgyTbq2XOF6buGjo-1-7YBOvdzaM5k_b6ng6zoXAieJPoCCflN5iBtliuFfk_VmYeAliy-2Z0zedQ3AH-74t4b_7uUbj55pGwlHgrT5DKbB4Q.ukbrw5DoErIKq24d1i8FUMvnTf7_OnS8uNqx1OEulGE&dib_tag=se&keywords=raspberry+pi+picam+3+wide&qid=1791481146&sprefix=raspberry+pi+picam+3+wide%2Caps%2C119&sr=8-1)
 
-  camera used to detect red, green and direction of the robot
+  camera used to detect red, green for obstacle challenge
 
 ## Giving the Truck Its Own Look
 
