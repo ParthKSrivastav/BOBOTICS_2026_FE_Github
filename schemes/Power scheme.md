@@ -9,36 +9,34 @@
 
 ## Power Distribution
 
-This diagram shows the power requirements listed for our Bobotics robot. It is a planning overview, not a wiring diagram: the power source and any voltage regulators still need to be specified.
+Our robot uses two power paths. A 10,000 mAh power bank powers the Raspberry Pi, which supplies the sensors and camera. A separate 9 V supply powers the motor controller, which supplies the motors.
 
 ```mermaid
 flowchart TD
-    SOURCE["Power source<br/>Voltage and capacity to be specified"]
+    BANK["10,000 mAh power bank"]
+    PI["Raspberry Pi<br/>5 V · 3 A"]
 
-    SOURCE --> V5["5 V supply"]
-    SOURCE --> V9["9 V supply"]
-    SOURCE --> V4["4 V supply"]
-    SOURCE --> V33["3.3 V supply"]
+    SUPPLY["9 V power supply"]
+    CONTROLLER["Motor controller<br/>9 V · 2 A"]
+    MOTORS["Motors<br/>4 V · 1 A"]
 
-    V5 --> PI["Raspberry Pi<br/>5 V · 3 A"]
-    V5 --> LUNA["TF-Luna distance sensor<br/>5 V · 150 mA"]
-    V5 --> CAM["PiCam<br/>5 V · 150 mA"]
+    BNO["BNO085<br/>3.3 V · 5 mA"]
+    LUNA["TF-Luna distance sensors × 2<br/>5 V · 150 mA listed"]
+    CAMERA["PiCam<br/>5 V · 150 mA"]
 
-    V9 --> DRIVER["Motor controller<br/>9 V · 2 A"]
-    V4 --> MOTORS["Motors<br/>4 V · 1 A"]
-    V33 --> IMU["BNO085<br/>3.3 V · 5 mA"]
+    BANK -->|"5 V power"| PI
+
+    PI -->|"3.3 V power"| BNO
+    PI -->|"5 V power"| LUNA
+    PI -->|"Camera connection: FFC ribbon cable (flat flexible cable)"| CAMERA
+
+    SUPPLY -->|"9 V power"| CONTROLLER
+    CONTROLLER -->|"Motor power output"| MOTORS
 
     classDef source fill:#263238,color:#ffffff,stroke:#263238
-    classDef supply fill:#e3f2fd,color:#102a43,stroke:#1976d2
-    classDef component fill:#f5f5f5,color:#212121,stroke:#616161
+    classDef controller fill:#e3f2fd,color:#102a43,stroke:#1976d2
+    classDef device fill:#f5f5f5,color:#212121,stroke:#616161
 
-    class SOURCE source
-    class V5,V9,V4,V33 supply
-    class PI,LUNA,CAM,DRIVER,MOTORS,IMU component
-```
-
-### Notes
-
-- Voltage and current labels reproduce our recorded values.
-- Branches group components by voltage; they do not specify physical connections.
-- Confirm whether
+    class BANK,SUPPLY source
+    class PI,CONTROLLER controller
+    class BNO,LUNA,CAMERA,MOTORS device
