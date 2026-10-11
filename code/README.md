@@ -1,5 +1,7 @@
 video link for open challenge - https://youtu.be/dSNzIIwx2gU 
+We implemented red and green obstacle detection and an obstacle-avoidance routine. However, we were unable to achieve reliable autonomous completion of the Obstacle Challenge before the submission deadline. Unresolved issues included reverse recovery and inconsistent obstacle-avoidance behavior.
 
+We ran out of time to record an obstacle demonstration, so no Obstacle Challenge video is included in this submission. The obstacle-navigation code is included in the repository, but we do not claim that it reliably completes the challenge.
 
 
 
